@@ -2,56 +2,84 @@ package uniseg
 
 import "unicode/utf8"
 
-// The states of the line break parser.
+// The states of the line break parser. The lower bits of a state contain the
+// line breaking class of the last character (after the resolution of rules LB1,
+// LB9, and LB10). Some classes are split into multiple states to capture
+// sequences relevant to the rules (e.g. spaces following certain classes).
+// The higher bits contain additional flags and context information.
 const (
-	lbAny = iota
+	lbAny = iota // Start of text (sot).
 	lbBK
 	lbCR
 	lbLF
 	lbNL
 	lbSP
 	lbZW
+	lbZWSP   // ZW SP+ (LB8)
+	lbOPSP   // OP SP+ (LB14)
+	lbQUPiSP // [\p{Pi}&QU] SP+ (LB15a)
+	lbCLCPSP // (CL | CP) SP+ (LB16)
+	lbB2SP   // B2 SP+ (LB17)
 	lbWJ
 	lbGL
 	lbBA
 	lbHY
+	lbHH
 	lbCL
 	lbCP
 	lbEX
 	lbIS
 	lbSY
 	lbOP
-	lbQU
-	lbQUSP
+	lbQU   // QU which is neither Pi nor Pf.
+	lbQUPi // [\p{Pi}&QU]
+	lbQUPf // [\p{Pf}&QU]
 	lbNS
-	lbCLCPSP
 	lbB2
-	lbB2SP
 	lbCB
 	lbBB
-	lbLB21a
 	lbHL
 	lbAL
 	lbNU
 	lbPR
-	lbEB
-	lbIDEM
-	lbNUNU
-	lbNUSY
-	lbNUIS
-	lbNUCL
-	lbNUCP
 	lbPO
+	lbID
+	lbEB
+	lbEM
+	lbIN
 	lbJL
 	lbJV
 	lbJT
 	lbH2
 	lbH3
-	lbOddRI
-	lbEvenRI
-	lbExtPicCn
-	lbZWJBit     = 64
-	lbCPeaFWHBit = 128
+	lbRI
+	lbAK
+	lbAP
+	lbAS
+	lbVI
+	lbVF
+
+	lbClassMask = 63 // Extracts the line breaking class from a state.
+
+	lbZWJBit = 64  // The last character was a zero width joiner (LB8a).
+	lbEABit  = 128 // The last base character is East Asian, i.e. it has East_Asian_Width F, W, or H (LB19a, LB30).
+
+	// Context bits. Their meaning depends on the line breaking class.
+	//
+	//   - lbQU, lbQUPi, lbQUPf: lbCtxA = the quotation mark follows sot or a
+	//     non-East Asian character (LB19a). lbCtxB = the initial quotation
+	//     mark follows sot, BK, CR, LF, NL, OP, QU, GL, SP, or ZW (LB15a).
+	//   - lbHY, lbHH: lbCtxA = the hyphen follows sot, BK, CR, LF, NL, SP, ZW,
+	//     CB, or GL (LB20a). lbCtxB = the hyphen follows HL (LB21a).
+	//   - lbSY, lbIS, lbCL, lbCP: lbCtxA = the character is part of the
+	//     sequence NU (SY | IS)* (CL | CP)? (LB25).
+	//   - lbAL: lbCtxA = U+25CC DOTTED CIRCLE (LB28a).
+	//   - lbAL, lbID: lbCtxB = the character is Extended_Pictographic and
+	//     unassigned (LB30b).
+	//   - lbVI: lbCtxA = the virama follows AK, U+25CC, or AS (LB28a).
+	//   - lbRI: lbCtxA = there is an odd number of regional indicators (LB30a).
+	lbCtxA = 256
+	lbCtxB = 512
 )
 
 // These constants define whether a given text may be broken into the next line.
@@ -64,222 +92,131 @@ const (
 	LineMustBreak        // You must break the line here.
 )
 
-// The line break parser's state transitions. It's anologous to grTransitions,
-// see comments there for details. Unicode version 14.0.0.
-var lbTransitions = map[[2]int][3]int{
-	// LB4.
-	{lbAny, prBK}: {lbBK, LineCanBreak, 310},
-	{lbBK, prAny}: {lbAny, LineMustBreak, 40},
+// lbClasses maps line break properties (after resolution according to LB1) to
+// line break classes as used in the parser states. Properties which result in
+// more than one possible class (QU and SP) are mapped to their base class and
+// refined later.
+var lbClasses = [...]int{
+	prBK: lbBK,
+	prCR: lbCR,
+	prLF: lbLF,
+	prNL: lbNL,
+	prSP: lbSP,
+	prZW: lbZW,
+	prWJ: lbWJ,
+	prGL: lbGL,
+	prBA: lbBA,
+	prHY: lbHY,
+	prHH: lbHH,
+	prCL: lbCL,
+	prCP: lbCP,
+	prEX: lbEX,
+	prIS: lbIS,
+	prSY: lbSY,
+	prOP: lbOP,
+	prQU: lbQU,
+	prNS: lbNS,
+	prB2: lbB2,
+	prCB: lbCB,
+	prBB: lbBB,
+	prHL: lbHL,
+	prAL: lbAL,
+	prNU: lbNU,
+	prPR: lbPR,
+	prPO: lbPO,
+	prID: lbID,
+	prEB: lbEB,
+	prEM: lbEM,
+	prIN: lbIN,
+	prJL: lbJL,
+	prJV: lbJV,
+	prJT: lbJT,
+	prH2: lbH2,
+	prH3: lbH3,
+	prRI: lbRI,
+	prAK: lbAK,
+	prAP: lbAP,
+	prAS: lbAS,
+	prVI: lbVI,
+	prVF: lbVF,
+}
 
-	// LB5.
-	{lbAny, prCR}: {lbCR, LineCanBreak, 310},
-	{lbAny, prLF}: {lbLF, LineCanBreak, 310},
-	{lbAny, prNL}: {lbNL, LineCanBreak, 310},
-	{lbCR, prLF}:  {lbLF, LineDontBreak, 50},
-	{lbCR, prAny}: {lbAny, LineMustBreak, 50},
-	{lbLF, prAny}: {lbAny, LineMustBreak, 50},
-	{lbNL, prAny}: {lbAny, LineMustBreak, 50},
+// dottedCircle is U+25CC DOTTED CIRCLE which is used in LB28a.
+const dottedCircle = 0x25cc
 
-	// LB6.
-	{lbAny, prBK}: {lbBK, LineDontBreak, 60},
-	{lbAny, prCR}: {lbCR, LineDontBreak, 60},
-	{lbAny, prLF}: {lbLF, LineDontBreak, 60},
-	{lbAny, prNL}: {lbNL, LineDontBreak, 60},
+// lineBreakClass returns the line breaking class of the given code point after
+// applying rule LB1. It returns -1 for combining marks (CM) and zero width
+// joiners (ZWJ). The second return value is the code point's General Category.
+func lineBreakClass(r rune) (class, generalCategory int) {
+	var prop int
+	prop, generalCategory = propertyWithGenCat(lineBreakCodePoints, r)
 
-	// LB7.
-	{lbAny, prSP}: {lbSP, LineDontBreak, 70},
-	{lbAny, prZW}: {lbZW, LineDontBreak, 70},
+	// LB1.
+	switch prop {
+	case prAI, prSG, prXX:
+		prop = prAL
+	case prSA:
+		if generalCategory == gcMn || generalCategory == gcMc {
+			prop = prCM
+		} else {
+			prop = prAL
+		}
+	case prCJ:
+		prop = prNS
+	}
 
-	// LB8.
-	{lbZW, prSP}:  {lbZW, LineDontBreak, 70},
-	{lbZW, prAny}: {lbAny, LineCanBreak, 80},
+	if prop == prCM || prop == prZWJ {
+		return -1, generalCategory
+	}
+	if prop < len(lbClasses) {
+		if class = lbClasses[prop]; class != lbAny {
+			return class, generalCategory
+		}
+	}
+	return lbAL, generalCategory // Should not happen.
+}
 
-	// LB11.
-	{lbAny, prWJ}: {lbWJ, LineDontBreak, 110},
-	{lbWJ, prAny}: {lbAny, LineDontBreak, 110},
+// isEastAsian returns true if the given code point has East_Asian_Width F, W,
+// or H.
+func isEastAsian(r rune) bool {
+	if r < 0x1100 {
+		return false // Fast path: There are no such characters below U+1100.
+	}
+	ea := property(eastAsianWidth, r)
+	return ea == prF || ea == prW || ea == prH
+}
 
-	// LB12.
-	{lbAny, prGL}: {lbGL, LineCanBreak, 310},
-	{lbGL, prAny}: {lbAny, LineDontBreak, 120},
+// lbLookahead holds information about the characters following the character
+// currently being processed by the line break parser.
+type lbLookahead struct {
+	b   []byte
+	str string
+}
 
-	// LB13 (simple transitions).
-	{lbAny, prCL}: {lbCL, LineCanBreak, 310},
-	{lbAny, prCP}: {lbCP, LineCanBreak, 310},
-	{lbAny, prEX}: {lbEX, LineDontBreak, 130},
-	{lbAny, prIS}: {lbIS, LineCanBreak, 310},
-	{lbAny, prSY}: {lbSY, LineCanBreak, 310},
-
-	// LB14.
-	{lbAny, prOP}: {lbOP, LineCanBreak, 310},
-	{lbOP, prSP}:  {lbOP, LineDontBreak, 70},
-	{lbOP, prAny}: {lbAny, LineDontBreak, 140},
-
-	// LB15.
-	{lbQU, prSP}:   {lbQUSP, LineDontBreak, 70},
-	{lbQU, prOP}:   {lbOP, LineDontBreak, 150},
-	{lbQUSP, prOP}: {lbOP, LineDontBreak, 150},
-
-	// LB16.
-	{lbCL, prSP}:     {lbCLCPSP, LineDontBreak, 70},
-	{lbNUCL, prSP}:   {lbCLCPSP, LineDontBreak, 70},
-	{lbCP, prSP}:     {lbCLCPSP, LineDontBreak, 70},
-	{lbNUCP, prSP}:   {lbCLCPSP, LineDontBreak, 70},
-	{lbCL, prNS}:     {lbNS, LineDontBreak, 160},
-	{lbNUCL, prNS}:   {lbNS, LineDontBreak, 160},
-	{lbCP, prNS}:     {lbNS, LineDontBreak, 160},
-	{lbNUCP, prNS}:   {lbNS, LineDontBreak, 160},
-	{lbCLCPSP, prNS}: {lbNS, LineDontBreak, 160},
-
-	// LB17.
-	{lbAny, prB2}:  {lbB2, LineCanBreak, 310},
-	{lbB2, prSP}:   {lbB2SP, LineDontBreak, 70},
-	{lbB2, prB2}:   {lbB2, LineDontBreak, 170},
-	{lbB2SP, prB2}: {lbB2, LineDontBreak, 170},
-
-	// LB18.
-	{lbSP, prAny}:     {lbAny, LineCanBreak, 180},
-	{lbQUSP, prAny}:   {lbAny, LineCanBreak, 180},
-	{lbCLCPSP, prAny}: {lbAny, LineCanBreak, 180},
-	{lbB2SP, prAny}:   {lbAny, LineCanBreak, 180},
-
-	// LB19.
-	{lbAny, prQU}: {lbQU, LineDontBreak, 190},
-	{lbQU, prAny}: {lbAny, LineDontBreak, 190},
-
-	// LB20.
-	{lbAny, prCB}: {lbCB, LineCanBreak, 200},
-	{lbCB, prAny}: {lbAny, LineCanBreak, 200},
-
-	// LB21.
-	{lbAny, prBA}: {lbBA, LineDontBreak, 210},
-	{lbAny, prHY}: {lbHY, LineDontBreak, 210},
-	{lbAny, prNS}: {lbNS, LineDontBreak, 210},
-	{lbAny, prBB}: {lbBB, LineCanBreak, 310},
-	{lbBB, prAny}: {lbAny, LineDontBreak, 210},
-
-	// LB21a.
-	{lbAny, prHL}:    {lbHL, LineCanBreak, 310},
-	{lbHL, prHY}:     {lbLB21a, LineDontBreak, 210},
-	{lbHL, prBA}:     {lbLB21a, LineDontBreak, 210},
-	{lbLB21a, prAny}: {lbAny, LineDontBreak, 211},
-
-	// LB21b.
-	{lbSY, prHL}:   {lbHL, LineDontBreak, 212},
-	{lbNUSY, prHL}: {lbHL, LineDontBreak, 212},
-
-	// LB22.
-	{lbAny, prIN}: {lbAny, LineDontBreak, 220},
-
-	// LB23.
-	{lbAny, prAL}:  {lbAL, LineCanBreak, 310},
-	{lbAny, prNU}:  {lbNU, LineCanBreak, 310},
-	{lbAL, prNU}:   {lbNU, LineDontBreak, 230},
-	{lbHL, prNU}:   {lbNU, LineDontBreak, 230},
-	{lbNU, prAL}:   {lbAL, LineDontBreak, 230},
-	{lbNU, prHL}:   {lbHL, LineDontBreak, 230},
-	{lbNUNU, prAL}: {lbAL, LineDontBreak, 230},
-	{lbNUNU, prHL}: {lbHL, LineDontBreak, 230},
-
-	// LB23a.
-	{lbAny, prPR}:  {lbPR, LineCanBreak, 310},
-	{lbAny, prID}:  {lbIDEM, LineCanBreak, 310},
-	{lbAny, prEB}:  {lbEB, LineCanBreak, 310},
-	{lbAny, prEM}:  {lbIDEM, LineCanBreak, 310},
-	{lbPR, prID}:   {lbIDEM, LineDontBreak, 231},
-	{lbPR, prEB}:   {lbEB, LineDontBreak, 231},
-	{lbPR, prEM}:   {lbIDEM, LineDontBreak, 231},
-	{lbIDEM, prPO}: {lbPO, LineDontBreak, 231},
-	{lbEB, prPO}:   {lbPO, LineDontBreak, 231},
-
-	// LB24.
-	{lbAny, prPO}: {lbPO, LineCanBreak, 310},
-	{lbPR, prAL}:  {lbAL, LineDontBreak, 240},
-	{lbPR, prHL}:  {lbHL, LineDontBreak, 240},
-	{lbPO, prAL}:  {lbAL, LineDontBreak, 240},
-	{lbPO, prHL}:  {lbHL, LineDontBreak, 240},
-	{lbAL, prPR}:  {lbPR, LineDontBreak, 240},
-	{lbAL, prPO}:  {lbPO, LineDontBreak, 240},
-	{lbHL, prPR}:  {lbPR, LineDontBreak, 240},
-	{lbHL, prPO}:  {lbPO, LineDontBreak, 240},
-
-	// LB25 (simple transitions).
-	{lbPR, prNU}:   {lbNU, LineDontBreak, 250},
-	{lbPO, prNU}:   {lbNU, LineDontBreak, 250},
-	{lbOP, prNU}:   {lbNU, LineDontBreak, 250},
-	{lbHY, prNU}:   {lbNU, LineDontBreak, 250},
-	{lbNU, prNU}:   {lbNUNU, LineDontBreak, 250},
-	{lbNU, prSY}:   {lbNUSY, LineDontBreak, 250},
-	{lbNU, prIS}:   {lbNUIS, LineDontBreak, 250},
-	{lbNUNU, prNU}: {lbNUNU, LineDontBreak, 250},
-	{lbNUNU, prSY}: {lbNUSY, LineDontBreak, 250},
-	{lbNUNU, prIS}: {lbNUIS, LineDontBreak, 250},
-	{lbNUSY, prNU}: {lbNUNU, LineDontBreak, 250},
-	{lbNUSY, prSY}: {lbNUSY, LineDontBreak, 250},
-	{lbNUSY, prIS}: {lbNUIS, LineDontBreak, 250},
-	{lbNUIS, prNU}: {lbNUNU, LineDontBreak, 250},
-	{lbNUIS, prSY}: {lbNUSY, LineDontBreak, 250},
-	{lbNUIS, prIS}: {lbNUIS, LineDontBreak, 250},
-	{lbNU, prCL}:   {lbNUCL, LineDontBreak, 250},
-	{lbNU, prCP}:   {lbNUCP, LineDontBreak, 250},
-	{lbNUNU, prCL}: {lbNUCL, LineDontBreak, 250},
-	{lbNUNU, prCP}: {lbNUCP, LineDontBreak, 250},
-	{lbNUSY, prCL}: {lbNUCL, LineDontBreak, 250},
-	{lbNUSY, prCP}: {lbNUCP, LineDontBreak, 250},
-	{lbNUIS, prCL}: {lbNUCL, LineDontBreak, 250},
-	{lbNUIS, prCP}: {lbNUCP, LineDontBreak, 250},
-	{lbNU, prPO}:   {lbPO, LineDontBreak, 250},
-	{lbNUNU, prPO}: {lbPO, LineDontBreak, 250},
-	{lbNUSY, prPO}: {lbPO, LineDontBreak, 250},
-	{lbNUIS, prPO}: {lbPO, LineDontBreak, 250},
-	{lbNUCL, prPO}: {lbPO, LineDontBreak, 250},
-	{lbNUCP, prPO}: {lbPO, LineDontBreak, 250},
-	{lbNU, prPR}:   {lbPR, LineDontBreak, 250},
-	{lbNUNU, prPR}: {lbPR, LineDontBreak, 250},
-	{lbNUSY, prPR}: {lbPR, LineDontBreak, 250},
-	{lbNUIS, prPR}: {lbPR, LineDontBreak, 250},
-	{lbNUCL, prPR}: {lbPR, LineDontBreak, 250},
-	{lbNUCP, prPR}: {lbPR, LineDontBreak, 250},
-
-	// LB26.
-	{lbAny, prJL}: {lbJL, LineCanBreak, 310},
-	{lbAny, prJV}: {lbJV, LineCanBreak, 310},
-	{lbAny, prJT}: {lbJT, LineCanBreak, 310},
-	{lbAny, prH2}: {lbH2, LineCanBreak, 310},
-	{lbAny, prH3}: {lbH3, LineCanBreak, 310},
-	{lbJL, prJL}:  {lbJL, LineDontBreak, 260},
-	{lbJL, prJV}:  {lbJV, LineDontBreak, 260},
-	{lbJL, prH2}:  {lbH2, LineDontBreak, 260},
-	{lbJL, prH3}:  {lbH3, LineDontBreak, 260},
-	{lbJV, prJV}:  {lbJV, LineDontBreak, 260},
-	{lbJV, prJT}:  {lbJT, LineDontBreak, 260},
-	{lbH2, prJV}:  {lbJV, LineDontBreak, 260},
-	{lbH2, prJT}:  {lbJT, LineDontBreak, 260},
-	{lbJT, prJT}:  {lbJT, LineDontBreak, 260},
-	{lbH3, prJT}:  {lbJT, LineDontBreak, 260},
-
-	// LB27.
-	{lbJL, prPO}: {lbPO, LineDontBreak, 270},
-	{lbJV, prPO}: {lbPO, LineDontBreak, 270},
-	{lbJT, prPO}: {lbPO, LineDontBreak, 270},
-	{lbH2, prPO}: {lbPO, LineDontBreak, 270},
-	{lbH3, prPO}: {lbPO, LineDontBreak, 270},
-	{lbPR, prJL}: {lbJL, LineDontBreak, 270},
-	{lbPR, prJV}: {lbJV, LineDontBreak, 270},
-	{lbPR, prJT}: {lbJT, LineDontBreak, 270},
-	{lbPR, prH2}: {lbH2, LineDontBreak, 270},
-	{lbPR, prH3}: {lbH3, LineDontBreak, 270},
-
-	// LB28.
-	{lbAL, prAL}: {lbAL, LineDontBreak, 280},
-	{lbAL, prHL}: {lbHL, LineDontBreak, 280},
-	{lbHL, prAL}: {lbAL, LineDontBreak, 280},
-	{lbHL, prHL}: {lbHL, LineDontBreak, 280},
-
-	// LB29.
-	{lbIS, prAL}:   {lbAL, LineDontBreak, 290},
-	{lbIS, prHL}:   {lbHL, LineDontBreak, 290},
-	{lbNUIS, prAL}: {lbAL, LineDontBreak, 290},
-	{lbNUIS, prHL}: {lbHL, LineDontBreak, 290},
+// next returns the next code point which is not a combining mark or a zero
+// width joiner (these are ignored according to LB9) and its line breaking class.
+// If the end of the text is reached, ok is false.
+func (l *lbLookahead) next() (r rune, class int, ok bool) {
+	for {
+		var length int
+		if l.b != nil { // Byte slice version.
+			if len(l.b) == 0 {
+				return 0, 0, false
+			}
+			r, length = utf8.DecodeRune(l.b)
+			l.b = l.b[length:]
+		} else { // String version.
+			if len(l.str) == 0 {
+				return 0, 0, false
+			}
+			r, length = utf8.DecodeRuneInString(l.str)
+			l.str = l.str[length:]
+		}
+		class, _ = lineBreakClass(r)
+		if class >= 0 {
+			return r, class, true
+		}
+	}
 }
 
 // transitionLineBreakState determines the new state of the line break parser
@@ -288,183 +225,408 @@ var lbTransitions = map[[2]int][3]int{
 // code point is needed to determine the new state, the byte slice or the string
 // starting after rune "r" can be used (whichever is not nil or empty) for
 // further lookups.
+//
+// The rules are those of Unicode Standard Annex #14, Unicode version 18.0.0.
 func transitionLineBreakState(state int, r rune, b []byte, str string) (newState int, lineBreak int) {
-	// Determine the property of the next character.
-	nextProperty, generalCategory := propertyWithGenCat(lineBreakCodePoints, r)
-
-	// Prepare.
-	var forceNoBreak, isCPeaFWH bool
-	if state >= 0 && state&lbCPeaFWHBit != 0 {
-		isCPeaFWH = true // LB30: CP but ea is not F, W, or H.
-		state = state &^ lbCPeaFWHBit
+	if state < 0 {
+		state = lbAny // LB2: sot is treated like a state without previous characters.
 	}
-	if state >= 0 && state&lbZWJBit != 0 {
-		state = state &^ lbZWJBit // Extract zero-width joiner bit.
-		forceNoBreak = true       // LB8a.
-	}
+	prev := state & lbClassMask
+	prevEA := state&lbEABit != 0
+	ctxA := state&lbCtxA != 0
+	ctxB := state&lbCtxB != 0
 
-	defer func() {
-		// Transition into LB30.
-		if newState == lbCP || newState == lbNUCP {
-			ea := property(eastAsianWidth, r)
-			if ea != prF && ea != prW && ea != prH {
-				newState |= lbCPeaFWHBit
-			}
-		}
-
-		// Override break.
-		if forceNoBreak {
-			lineBreak = LineDontBreak
-		}
-	}()
-
-	// LB1.
-	if nextProperty == prAI || nextProperty == prSG || nextProperty == prXX {
-		nextProperty = prAL
-	} else if nextProperty == prSA {
-		if generalCategory == gcMn || generalCategory == gcMc {
-			nextProperty = prCM
-		} else {
-			nextProperty = prAL
-		}
-	} else if nextProperty == prCJ {
-		nextProperty = prNS
-	}
+	// Determine the class of the next character.
+	next, generalCategory := lineBreakClass(r)
 
 	// Combining marks.
-	if nextProperty == prZWJ || nextProperty == prCM {
-		var bit int
-		if nextProperty == prZWJ {
-			bit = lbZWJBit
+	if next < 0 {
+		var zwj int
+		if r == 0x200d {
+			zwj = lbZWJBit
 		}
-		mustBreakState := state < 0 || state == lbBK || state == lbCR || state == lbLF || state == lbNL
-		if !mustBreakState && state != lbSP && state != lbZW && state != lbQUSP && state != lbCLCPSP && state != lbB2SP {
-			// LB9.
-			return state | bit, LineDontBreak
-		} else {
-			// LB10.
-			if mustBreakState {
-				return lbAL | bit, LineMustBreak
-			}
-			return lbAL | bit, LineCanBreak
+		switch prev {
+		case lbAny, lbBK, lbCR, lbLF, lbNL, lbSP, lbZW, lbZWSP, lbOPSP, lbQUPiSP, lbCLCPSP, lbB2SP:
+			// LB10: Treat any remaining CM or ZWJ as AL with the properties of
+			// U+0041 LATIN CAPITAL LETTER A.
+			next = lbAL
+			generalCategory = gcLu
+			r = 'A'
+			defer func() {
+				newState |= zwj
+			}()
+		default:
+			// LB9: Treat X (CM | ZWJ)* as X.
+			return (state &^ lbZWJBit) | zwj, LineDontBreak
 		}
 	}
 
-	// Find the applicable transition in the table.
-	var rule int
-	transition, ok := lbTransitions[[2]int{state, nextProperty}]
-	if ok {
-		// We have a specific transition. We'll use it.
-		newState, lineBreak, rule = transition[0], transition[1], transition[2]
-	} else {
-		// No specific transition found. Try the less specific ones.
-		transAnyProp, okAnyProp := lbTransitions[[2]int{state, prAny}]
-		transAnyState, okAnyState := lbTransitions[[2]int{lbAny, nextProperty}]
-		if okAnyProp && okAnyState {
-			// Both apply. We'll use a mix (see comments for grTransitions).
-			newState, lineBreak, rule = transAnyState[0], transAnyState[1], transAnyState[2]
-			if transAnyProp[2] < transAnyState[2] {
-				lineBreak, rule = transAnyProp[1], transAnyProp[2]
+	nextEA := isEastAsian(r)
+	lookahead := lbLookahead{b: b, str: str}
+
+	// Determine the new state.
+	newState = next
+	switch next {
+	case lbSP:
+		switch prev {
+		case lbZW, lbZWSP:
+			newState = lbZWSP
+		case lbOP, lbOPSP:
+			newState = lbOPSP
+		case lbQUPi:
+			if ctxB {
+				newState = lbQUPiSP
 			}
-		} else if okAnyProp {
-			// We only have a specific state.
-			newState, lineBreak, rule = transAnyProp[0], transAnyProp[1], transAnyProp[2]
-			// This branch will probably never be reached because okAnyState will
-			// always be true given the current transition map. But we keep it here
-			// for future modifications to the transition map where this may not be
-			// true anymore.
-		} else if okAnyState {
-			// We only have a specific property.
-			newState, lineBreak, rule = transAnyState[0], transAnyState[1], transAnyState[2]
-		} else {
-			// No known transition. LB31: ALL ÷ ALL.
-			newState, lineBreak, rule = lbAny, LineCanBreak, 310
+		case lbQUPiSP:
+			newState = lbQUPiSP
+		case lbCL, lbCP, lbCLCPSP:
+			newState = lbCLCPSP
+		case lbB2, lbB2SP:
+			newState = lbB2SP
 		}
+	case lbQU:
+		switch generalCategory {
+		case gcPi:
+			newState = lbQUPi
+			switch prev {
+			case lbAny, lbBK, lbCR, lbLF, lbNL, lbOP, lbQU, lbQUPi, lbQUPf, lbGL, lbSP, lbZW, lbZWSP, lbOPSP, lbQUPiSP, lbCLCPSP, lbB2SP:
+				newState |= lbCtxB
+			}
+		case gcPf:
+			newState = lbQUPf
+		}
+		next = newState
+		if prev == lbAny || !prevEA {
+			newState |= lbCtxA
+		}
+	case lbHY, lbHH:
+		switch prev {
+		case lbAny, lbBK, lbCR, lbLF, lbNL, lbSP, lbZW, lbZWSP, lbOPSP, lbQUPiSP, lbCLCPSP, lbB2SP, lbCB, lbGL:
+			newState |= lbCtxA
+		case lbHL:
+			newState |= lbCtxB
+		}
+	case lbSY, lbIS, lbCL, lbCP:
+		if prev == lbNU || (prev == lbSY || prev == lbIS) && ctxA {
+			newState |= lbCtxA
+		}
+	case lbAL:
+		if r == dottedCircle {
+			newState |= lbCtxA
+		}
+		fallthrough
+	case lbID:
+		// Unassigned code points are not listed in the property table and
+		// have no General Category there.
+		if (generalCategory == gcCn || generalCategory == gcNone) && property(graphemeCodePoints, r) == prExtendedPictographic {
+			newState |= lbCtxB
+		}
+	case lbVI:
+		if prev == lbAK || prev == lbAS || prev == lbAL && ctxA {
+			newState |= lbCtxA
+		}
+	case lbRI:
+		if prev != lbRI || !ctxA {
+			newState |= lbCtxA
+		}
+	}
+	if nextEA {
+		newState |= lbEABit
+	}
+
+	// Determine the line break.
+	lineBreak = lineBreakBetween(prev, next, newState, prevEA, nextEA, ctxA, ctxB, state&lbZWJBit != 0, r, &lookahead)
+	return
+}
+
+// lineBreakBetween applies the line breaking rules LB4 to LB31 to determine the
+// line break between a character of class "prev" and one of class "next" (code
+// point "r"). "newState" is the parser state after the "next" character. The
+// other arguments describe properties of the "prev" and "next" characters, see
+// [transitionLineBreakState] for details.
+func lineBreakBetween(prev, next, newState int, prevEA, nextEA, ctxA, ctxB, zwj bool, r rune, lookahead *lbLookahead) int {
+	isSP := func(class int) bool {
+		switch class {
+		case lbSP, lbZWSP, lbOPSP, lbQUPiSP, lbCLCPSP, lbB2SP:
+			return true
+		}
+		return false
+	}
+	isAKLike := func(class int, dottedCircle bool) bool { // (AK | [◌] | AS)
+		return class == lbAK || class == lbAS || class == lbAL && dottedCircle
+	}
+	nextIsDottedCircle := next == lbAL && newState&lbCtxA != 0
+	isNUSeq := prev == lbNU || (prev == lbSY || prev == lbIS) && ctxA // NU (SY | IS)*
+
+	// LB4.
+	if prev == lbBK {
+		return LineMustBreak
+	}
+
+	// LB5.
+	if prev == lbCR && next == lbLF {
+		return LineDontBreak
+	}
+	if prev == lbCR || prev == lbLF || prev == lbNL {
+		return LineMustBreak
+	}
+
+	// LB6.
+	if next == lbBK || next == lbCR || next == lbLF || next == lbNL {
+		return LineDontBreak
+	}
+
+	// LB7.
+	if next == lbSP || next == lbZW {
+		return LineDontBreak
+	}
+
+	// LB8.
+	if prev == lbZW || prev == lbZWSP {
+		return LineCanBreak
+	}
+
+	// LB8a.
+	if zwj {
+		return LineDontBreak
+	}
+
+	// LB11.
+	if next == lbWJ || prev == lbWJ {
+		return LineDontBreak
+	}
+
+	// LB12.
+	if prev == lbGL {
+		return LineDontBreak
 	}
 
 	// LB12a.
-	if rule > 121 &&
-		nextProperty == prGL &&
-		(state != lbSP && state != lbBA && state != lbHY && state != lbLB21a && state != lbQUSP && state != lbCLCPSP && state != lbB2SP) {
-		return lbGL, LineDontBreak
+	if next == lbGL && !isSP(prev) && prev != lbHY && prev != lbHH {
+		return LineDontBreak
 	}
 
 	// LB13.
-	if rule > 130 && state != lbNU && state != lbNUNU {
-		switch nextProperty {
-		case prCL:
-			return lbCL, LineDontBreak
-		case prCP:
-			return lbCP, LineDontBreak
-		case prIS:
-			return lbIS, LineDontBreak
-		case prSY:
-			return lbSY, LineDontBreak
+	if next == lbCL || next == lbCP || next == lbEX || next == lbSY {
+		return LineDontBreak
+	}
+
+	// LB14.
+	if prev == lbOP || prev == lbOPSP {
+		return LineDontBreak
+	}
+
+	// LB15a.
+	if prev == lbQUPi && ctxB || prev == lbQUPiSP {
+		return LineDontBreak
+	}
+
+	// LB15b.
+	if next == lbQUPf {
+		l := *lookahead
+		_, class, ok := l.next()
+		if !ok {
+			return LineDontBreak // eot
+		}
+		switch class {
+		case lbSP, lbGL, lbWJ, lbCL, lbQU, lbCP, lbEX, lbIS, lbSY, lbBK, lbCR, lbLF, lbNL, lbZW:
+			return LineDontBreak
 		}
 	}
 
-	// LB25 (look ahead).
-	if rule > 250 &&
-		(state == lbPR || state == lbPO) &&
-		nextProperty == prOP || nextProperty == prHY {
-		var r rune
-		if b != nil { // Byte slice version.
-			r, _ = utf8.DecodeRune(b)
-		} else { // String version.
-			r, _ = utf8.DecodeRuneInString(str)
-		}
-		if r != utf8.RuneError {
-			pr, _ := propertyWithGenCat(lineBreakCodePoints, r)
-			if pr == prNU {
-				return lbNU, LineDontBreak
-			}
+	// LB15c.
+	if isSP(prev) && next == lbIS {
+		l := *lookahead
+		if _, class, ok := l.next(); ok && class == lbNU {
+			return LineCanBreak
 		}
 	}
 
-	// LB30 (part one).
-	if rule > 300 {
-		if (state == lbAL || state == lbHL || state == lbNU || state == lbNUNU) && nextProperty == prOP {
-			ea := property(eastAsianWidth, r)
-			if ea != prF && ea != prW && ea != prH {
-				return lbOP, LineDontBreak
-			}
-		} else if isCPeaFWH {
-			switch nextProperty {
-			case prAL:
-				return lbAL, LineDontBreak
-			case prHL:
-				return lbHL, LineDontBreak
-			case prNU:
-				return lbNU, LineDontBreak
-			}
+	// LB15d.
+	if next == lbIS {
+		return LineDontBreak
+	}
+
+	// LB16.
+	if (prev == lbCL || prev == lbCP || prev == lbCLCPSP) && next == lbNS {
+		return LineDontBreak
+	}
+
+	// LB17.
+	if (prev == lbB2 || prev == lbB2SP) && next == lbB2 {
+		return LineDontBreak
+	}
+
+	// LB18.
+	if isSP(prev) {
+		return LineCanBreak
+	}
+
+	prevIsQU := prev == lbQU || prev == lbQUPi || prev == lbQUPf
+	nextIsQU := next == lbQU || next == lbQUPi || next == lbQUPf
+
+	// LB19.
+	if next == lbQU || next == lbQUPf || prev == lbQU || prev == lbQUPi {
+		return LineDontBreak
+	}
+
+	// LB19a.
+	if nextIsQU {
+		if !prevEA {
+			return LineDontBreak
 		}
+		l := *lookahead
+		if r, _, ok := l.next(); !ok || !isEastAsian(r) {
+			return LineDontBreak
+		}
+	}
+	if prevIsQU && (!nextEA || ctxA) {
+		return LineDontBreak
+	}
+
+	// LB20.
+	if next == lbCB || prev == lbCB {
+		return LineCanBreak
+	}
+
+	// LB20a.
+	if (prev == lbHY || prev == lbHH) && ctxA && (next == lbAL || next == lbHL) {
+		return LineDontBreak
+	}
+
+	// LB21.
+	if next == lbBA || next == lbHH || next == lbHY || next == lbNS || prev == lbBB {
+		return LineDontBreak
+	}
+
+	// LB21a.
+	if (prev == lbHY || prev == lbHH) && ctxB && next != lbHL {
+		return LineDontBreak
+	}
+
+	// LB21b.
+	if prev == lbSY && next == lbHL {
+		return LineDontBreak
+	}
+
+	// LB22.
+	if next == lbIN {
+		return LineDontBreak
+	}
+
+	// LB23.
+	if (prev == lbAL || prev == lbHL) && next == lbNU {
+		return LineDontBreak
+	}
+	if prev == lbNU && (next == lbAL || next == lbHL) {
+		return LineDontBreak
+	}
+
+	// LB23a.
+	if prev == lbPR && (next == lbID || next == lbEB || next == lbEM) {
+		return LineDontBreak
+	}
+	if (prev == lbID || prev == lbEB || prev == lbEM) && next == lbPO {
+		return LineDontBreak
+	}
+
+	// LB24.
+	if (prev == lbPR || prev == lbPO) && (next == lbAL || next == lbHL) {
+		return LineDontBreak
+	}
+	if (prev == lbAL || prev == lbHL) && (next == lbPR || next == lbPO) {
+		return LineDontBreak
+	}
+
+	// LB25.
+	if (next == lbPO || next == lbPR) && (isNUSeq || (prev == lbCL || prev == lbCP) && ctxA) {
+		return LineDontBreak
+	}
+	if (prev == lbPO || prev == lbPR) && next == lbOP {
+		l := *lookahead
+		_, class, ok := l.next()
+		if ok && class == lbIS {
+			_, class, ok = l.next()
+		}
+		if ok && class == lbNU {
+			return LineDontBreak
+		}
+	}
+	if next == lbNU && (prev == lbPO || prev == lbPR || prev == lbHY || prev == lbIS || isNUSeq) {
+		return LineDontBreak
+	}
+
+	// LB26.
+	if prev == lbJL && (next == lbJL || next == lbJV || next == lbH2 || next == lbH3) {
+		return LineDontBreak
+	}
+	if (prev == lbJV || prev == lbH2) && (next == lbJV || next == lbJT) {
+		return LineDontBreak
+	}
+	if (prev == lbJT || prev == lbH3) && next == lbJT {
+		return LineDontBreak
+	}
+
+	// LB27.
+	switch prev {
+	case lbJL, lbJV, lbJT, lbH2, lbH3:
+		if next == lbPO {
+			return LineDontBreak
+		}
+	case lbPR:
+		switch next {
+		case lbJL, lbJV, lbJT, lbH2, lbH3:
+			return LineDontBreak
+		}
+	}
+
+	// LB28.
+	if (prev == lbAL || prev == lbHL) && (next == lbAL || next == lbHL) {
+		return LineDontBreak
+	}
+
+	// LB28a.
+	nextIsAKLike := isAKLike(next, nextIsDottedCircle)
+	prevIsAKLike := isAKLike(prev, ctxA)
+	if prev == lbAP && nextIsAKLike {
+		return LineDontBreak
+	}
+	if prevIsAKLike && (next == lbVF || next == lbVI) {
+		return LineDontBreak
+	}
+	if prev == lbVI && ctxA && (next == lbAK || nextIsDottedCircle) {
+		return LineDontBreak
+	}
+	if prevIsAKLike && nextIsAKLike {
+		l := *lookahead
+		if _, class, ok := l.next(); ok && class == lbVF {
+			return LineDontBreak
+		}
+	}
+
+	// LB29.
+	if prev == lbIS && (next == lbAL || next == lbHL) {
+		return LineDontBreak
+	}
+
+	// LB30.
+	if (prev == lbAL || prev == lbHL || prev == lbNU) && next == lbOP && !nextEA {
+		return LineDontBreak
+	}
+	if prev == lbCP && !prevEA && (next == lbAL || next == lbHL || next == lbNU) {
+		return LineDontBreak
 	}
 
 	// LB30a.
-	if newState == lbAny && nextProperty == prRI {
-		if state != lbOddRI && state != lbEvenRI { // Includes state == -1.
-			// Transition into the first RI.
-			return lbOddRI, lineBreak
-		}
-		if state == lbOddRI {
-			// Don't break pairs of Regional Indicators.
-			return lbEvenRI, LineDontBreak
-		}
-		return lbOddRI, lineBreak
+	if prev == lbRI && ctxA && next == lbRI {
+		return LineDontBreak
 	}
 
 	// LB30b.
-	if rule > 302 {
-		if nextProperty == prEM {
-			if state == lbEB || state == lbExtPicCn {
-				return prAny, LineDontBreak
-			}
-		}
-		graphemeProperty := property(graphemeCodePoints, r)
-		if graphemeProperty == prExtendedPictographic && generalCategory == gcCn {
-			return lbExtPicCn, LineCanBreak
-		}
+	if next == lbEM && (prev == lbEB || (prev == lbAL || prev == lbID) && ctxB) {
+		return LineDontBreak
 	}
 
-	return
+	// LB31.
+	return LineCanBreak
 }

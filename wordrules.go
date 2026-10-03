@@ -29,7 +29,7 @@ const (
 )
 
 // The word break parser's state transitions. It's anologous to grTransitions,
-// see comments there for details. Unicode version 14.0.0.
+// see comments there for details. Unicode version 18.0.0.
 var wbTransitions = map[[2]int][3]int{
 	// WB3b.
 	{wbAny, prNewline}: {wbNewline, wbBreak, 32},
@@ -124,19 +124,24 @@ func transitionWordBreakState(state int, r rune, b []byte, str string) (newState
 		if state == wbNewline || state == wbCR || state == wbLF {
 			return wbAny, true // Make sure we don't apply WB4 to WB3a.
 		}
-		if state == wbWSegSpace || state == wbAny|wbZWJBit {
-			return wbAny, false // We don't break but this is also not WB3d or WB3c.
-		}
 		if state < 0 {
 			return wbAny, false
 		}
+		state = state &^ wbZWJBit // The zero-width joiner is not immediately followed by an emoji anymore.
+		if state == wbWSegSpace {
+			return wbAny, false // We don't break but this is also not WB3d.
+		}
 		return state, false
-	} else if nextProperty == prExtendedPictographic && state >= 0 && state&wbZWJBit != 0 {
-		// WB3c.
-		return wbAny, false
 	}
-	if state >= 0 {
+	if state >= 0 && state&wbZWJBit != 0 {
 		state = state &^ wbZWJBit
+		if property(graphemeCodePoints, r) == prExtendedPictographic {
+			// WB3c. Some code points (e.g. U+24C2) are both ALetter and
+			// Extended_Pictographic, so we still need to determine the new
+			// state according to the other rules.
+			newState, _ = transitionWordBreakState(state, r, b, str)
+			return newState, false
+		}
 	}
 
 	// Find the applicable transition in the table.

@@ -72,7 +72,7 @@ func TestStepBytesGrapheme(t *testing.T) {
 // the [Step] function.
 func TestStepBytesWord(t *testing.T) {
 	for testNum, testCase := range wordBreakTestCases {
-		if testNum == 1700 {
+		if testCase.original == "\u0061\U0001F1E6\u200D\U0001F1E7\U0001F1E8\u0062" {
 			// This test case reveals an inconsistency in the Unicode rule set,
 			// namely the handling of ZWJ within two RI graphemes. (Grapheme
 			// rules will restart the RI count, word rules will ignore the ZWJ.)
@@ -289,7 +289,7 @@ func TestStepStringGrapheme(t *testing.T) {
 // the StepString() function.
 func TestStepStringWord(t *testing.T) {
 	for testNum, testCase := range wordBreakTestCases {
-		if testNum == 1700 {
+		if testCase.original == "\u0061\U0001F1E6\u200D\U0001F1E7\U0001F1E8\u0062" {
 			// This test case reveals an inconsistency in the Unicode rule set,
 			// namely the handling of ZWJ within two RI graphemes. (Grapheme
 			// rules will restart the RI count, word rules will ignore the ZWJ.)

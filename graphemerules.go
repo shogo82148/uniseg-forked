@@ -13,6 +13,7 @@ const (
 	grExtendedPictographicZWJ
 	grRIOdd
 	grRIEven
+	grInCBLinkerBit = 16 // This bit is set if the last code points were an InCB Linker followed by zero or more InCB Extend (see GB9c).
 )
 
 // The grapheme cluster parser's breaking instructions.
@@ -36,7 +37,7 @@ const (
 //     are equal. Stop.
 //  6. Assume grAny and grBoundary.
 //
-// Unicode version 14.0.0.
+// Unicode version 18.0.0.
 var grTransitions = map[[2]int][3]int{
 	// GB5
 	{grAny, prCR}:      {grCR, grBoundary, 50},
@@ -99,11 +100,55 @@ func transitionGraphemeState(state int, r rune) (newState, prop int, boundary bo
 	// Determine the property of the next character.
 	prop = property(graphemeCodePoints, r)
 
+	// Extract the GB9c state.
+	var linker bool
+	if state >= 0 && state&grInCBLinkerBit != 0 {
+		linker = true
+		state = state &^ grInCBLinkerBit
+	}
+
+	newState, boundary = transitionGraphemeStateWithoutGB9c(state, prop)
+
+	// GB9c: \p{InCB=Linker} \p{InCB=Extend}* × \p{InCB=Consonant}
+	//
+	// If no linker was encountered yet, we only need to know if this code
+	// point is a linker. Most linkers have the Grapheme_Cluster_Break property
+	// Extend, so we can avoid the lookup for most other code points.
+	if linker || prop == prExtend || isInCBLinkerNotExtend(r) {
+		switch property(indicConjunctBreak, r) {
+		case prInCBLinker:
+			newState |= grInCBLinkerBit
+		case prInCBExtend:
+			if linker {
+				newState |= grInCBLinkerBit
+			}
+		case prInCBConsonant:
+			if linker {
+				boundary = false
+			}
+		}
+	}
+
+	return
+}
+
+// isInCBLinkerNotExtend returns true for code points with the
+// Indic_Conjunct_Break property Linker which do not have the
+// Grapheme_Cluster_Break property Extend. This list must be updated when the
+// Unicode version changes (see TestInCBLinkerNotExtend).
+func isInCBLinkerNotExtend(r rune) bool {
+	return r == 0x1cf5 || r == 0x1cf6 || r == 0x11a3a
+}
+
+// transitionGraphemeStateWithoutGB9c is like [transitionGraphemeState] but
+// it does not apply rule GB9c. The given state must not have the
+// grInCBLinkerBit set.
+func transitionGraphemeStateWithoutGB9c(state, prop int) (newState int, boundary bool) {
 	// Find the applicable transition.
 	transition, ok := grTransitions[[2]int{state, prop}]
 	if ok {
 		// We have a specific transition. We'll use it.
-		return transition[0], prop, transition[1] == grBoundary
+		return transition[0], transition[1] == grBoundary
 	}
 
 	// No specific transition found. Try the less specific ones.
@@ -121,7 +166,7 @@ func transitionGraphemeState(state int, r rune) (newState, prop int, boundary bo
 
 	if okAnyProp {
 		// We only have a specific state.
-		return transAnyProp[0], prop, transAnyProp[1] == grBoundary
+		return transAnyProp[0], transAnyProp[1] == grBoundary
 		// This branch will probably never be reached because okAnyState will
 		// always be true given the current transition map. But we keep it here
 		// for future modifications to the transition map where this may not be
@@ -130,9 +175,9 @@ func transitionGraphemeState(state int, r rune) (newState, prop int, boundary bo
 
 	if okAnyState {
 		// We only have a specific property.
-		return transAnyState[0], prop, transAnyState[1] == grBoundary
+		return transAnyState[0], transAnyState[1] == grBoundary
 	}
 
 	// No known transition. GB999: Any ÷ Any.
-	return grAny, prop, true
+	return grAny, true
 }

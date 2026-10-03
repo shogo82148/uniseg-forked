@@ -109,7 +109,7 @@ func TestGraphemesClass(t *testing.T) {
 // class.
 func TestGraphemesClassWord(t *testing.T) {
 	for testNum, testCase := range wordBreakTestCases {
-		if testNum == 1700 {
+		if testCase.original == "\u0061\U0001F1E6\u200D\U0001F1E7\U0001F1E8\u0062" {
 			// This test case reveals an inconsistency in the Unicode rule set,
 			// namely the handling of ZWJ within two RI graphemes. (Grapheme
 			// rules will restart the RI count, word rules will ignore the ZWJ.)
@@ -521,6 +521,32 @@ func BenchmarkGraphemesFunctionString(b *testing.B) {
 		for len(str) > 0 {
 			c, str, _, state = FirstGraphemeClusterInString(str, state)
 			resultRunes = []rune(c)
+		}
+	}
+}
+
+// Test that isInCBLinkerNotExtend reports exactly the code points with
+// InCB=Linker but without Grapheme_Cluster_Break=Extend, and that the other
+// assumptions about the InCB property made by the grapheme parser hold.
+func TestInCBLinkerNotExtend(t *testing.T) {
+	for _, entry := range indicConjunctBreak {
+		for r := rune(entry[0]); r <= rune(entry[1]); r++ {
+			prop := property(graphemeCodePoints, r)
+			switch entry[2] {
+			case prInCBLinker:
+				if (prop != prExtend) != isInCBLinkerNotExtend(r) {
+					t.Errorf("isInCBLinkerNotExtend(%U) = %t, but its grapheme property is %d", r, isInCBLinkerNotExtend(r), prop)
+				}
+			case prInCBExtend:
+				if prop != prExtend && prop != prZWJ {
+					t.Errorf("%U has InCB=Extend but its grapheme property is %d", r, prop)
+				}
+			}
+		}
+	}
+	for _, r := range []rune{0x1cf5, 0x1cf6, 0x11a3a} {
+		if property(indicConjunctBreak, r) != prInCBLinker {
+			t.Errorf("%U does not have InCB=Linker", r)
 		}
 	}
 }

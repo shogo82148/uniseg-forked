@@ -80,6 +80,12 @@ const (
 	prCB
 	prRI
 	prEM
+	prHH
+	prAK
+	prAP
+	prAS
+	prVI
+	prVF
 	prN
 	prNa
 	prA
@@ -87,6 +93,9 @@ const (
 	prH
 	prF
 	prEmojiPresentation
+	prInCBLinker
+	prInCBConsonant
+	prInCBExtend
 )
 
 // Unicode General Categories. Only the ones needed in the context of this

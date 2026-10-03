@@ -12,13 +12,17 @@
 //     - "emojis=<property>": include the specified emoji properties (e.g.
 //     "Extended_Pictographic").
 //     - "gencat": include general category properties.
+//     - "derived=<property>": the data file contains derived properties of the
+//     form "<code points> ; <property> ; <value>" (e.g. "InCB" in
+//     DerivedCoreProperties.txt). Only the specified property is included.
 //
 //go:generate go run gen_properties.go auxiliary/GraphemeBreakProperty graphemeproperties.go graphemeCodePoints graphemes emojis=Extended_Pictographic
-//go:generate go run gen_properties.go auxiliary/WordBreakProperty wordproperties.go workBreakCodePoints words emojis=Extended_Pictographic
+//go:generate go run gen_properties.go auxiliary/WordBreakProperty wordproperties.go workBreakCodePoints words
 //go:generate go run gen_properties.go auxiliary/SentenceBreakProperty sentenceproperties.go sentenceBreakCodePoints sentences
 //go:generate go run gen_properties.go LineBreak lineproperties.go lineBreakCodePoints lines gencat
 //go:generate go run gen_properties.go EastAsianWidth eastasianwidth.go eastAsianWidth eastasianwidth
 //go:generate go run gen_properties.go - emojipresentation.go emojiPresentation emojipresentation emojis=Emoji_Presentation
+//go:generate go run gen_properties.go DerivedCoreProperties indicconjunctbreak.go indicConjunctBreak indicconjunctbreak derived=InCB
 package main
 
 import (
@@ -41,12 +45,16 @@ import (
 // We want to test against a specific version rather than the latest. When the
 // package is upgraded to a new version, change these to generate new tests.
 const (
-	propertyURL = `https://www.unicode.org/Public/14.0.0/ucd/%s.txt`
-	emojiURL    = `https://unicode.org/Public/14.0.0/ucd/emoji/emoji-data.txt`
+	propertyURL = `https://www.unicode.org/Public/18.0.0/ucd/%s.txt`
+	emojiURL    = `https://unicode.org/Public/18.0.0/ucd/emoji/emoji-data.txt`
 )
 
 // The regular expression for a line containing a code point range property.
 var propertyPattern = regexp.MustCompile(`^([0-9A-F]{4,6})(\.\.([0-9A-F]{4,6}))?\s*;\s*([A-Za-z0-9_]+)\s*#\s(.+)$`)
+
+// The regular expression for a line containing a code point range and a
+// derived property with a value, e.g. "094D ; InCB; Linker # ...".
+var derivedPropertyPattern = regexp.MustCompile(`^([0-9A-F]{4,6})(\.\.([0-9A-F]{4,6}))?\s*;\s*([A-Za-z0-9_]+)\s*;\s*([A-Za-z0-9_]+)\s*#\s(.+)$`)
 
 func main() {
 	if len(os.Args) < 5 {
@@ -76,7 +84,7 @@ func main() {
 	if os.Args[1] != "-" {
 		mainURL = fmt.Sprintf(propertyURL, os.Args[1])
 	}
-	src, err := parse(mainURL, flags["emojis"], includeGeneralCategory)
+	src, err := parse(mainURL, flags["emojis"], flags["derived"], includeGeneralCategory)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -99,9 +107,12 @@ func main() {
 // "emojiProperty" is not an empty string, emoji code points for that emoji
 // property (e.g. "Extended_Pictographic") will be included. In those cases, you
 // may pass an empty "propertyURL" to skip parsing the main properties file. If
-// "includeGeneralCategory" is true, the Unicode General Category property will
-// be extracted from the comments and included in the output.
-func parse(propertyURL, emojiProperty string, includeGeneralCategory bool) (string, error) {
+// "derivedProperty" is not an empty string, the main properties file is
+// expected to contain derived properties with values (e.g. "InCB") and only
+// that property will be included. If "includeGeneralCategory" is true, the
+// Unicode General Category property will be extracted from the comments and
+// included in the output.
+func parse(propertyURL, emojiProperty, derivedProperty string, includeGeneralCategory bool) (string, error) {
 	if propertyURL == "" && emojiProperty == "" {
 		return "", errors.New("no properties to parse")
 	}
@@ -128,6 +139,20 @@ func parse(propertyURL, emojiProperty string, includeGeneralCategory bool) (stri
 
 			// Skip comments and empty lines.
 			if strings.HasPrefix(line, "#") || line == "" {
+				continue
+			}
+
+			if derivedProperty != "" {
+				// Only consider lines with the requested derived property.
+				fields := derivedPropertyPattern.FindStringSubmatch(line)
+				if fields == nil || fields[4] != derivedProperty {
+					continue
+				}
+				from, to := fields[1], fields[3]
+				if to == "" {
+					to = from
+				}
+				properties = append(properties, [4]string{from, to, derivedProperty + fields[5], fields[6]})
 				continue
 			}
 
@@ -194,11 +219,19 @@ func parse(propertyURL, emojiProperty string, includeGeneralCategory bool) (stri
 	if includeGeneralCategory {
 		columns = 4
 	}
-	if emojiURL != "" {
+	if emojiProperty != "" {
 		emojiComment = `
 // and
 // ` + emojiURL + `
-// ("Extended_Pictographic" only)`
+// ("` + emojiProperty + `" only)`
+		if propertyURL == "" {
+			emojiComment = emojiURL + `
+// ("` + emojiProperty + `" only)`
+		}
+	}
+	if derivedProperty != "" {
+		emojiComment += `
+// ("` + derivedProperty + `" only)`
 	}
 	buf.WriteString(`// Code generated via go generate from gen_properties.go. DO NOT EDIT.
 

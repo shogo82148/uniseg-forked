@@ -25,7 +25,7 @@ const (
 )
 
 // The sentence break parser's state transitions. It's anologous to
-// grTransitions, see comments there for details. Unicode version 14.0.0.
+// grTransitions, see comments there for details. Unicode version 18.0.0.
 var sbTransitions = map[[2]int][3]int{
 	// SB3.
 	{sbAny, prCR}: {sbCR, sbDontBreak, 9990},
@@ -85,27 +85,30 @@ var sbTransitions = map[[2]int][3]int{
 	{sbSTerm, prSp}:        {sbSB8aSp, sbDontBreak, 90},
 	{sbSB8aClose, prSp}:    {sbSB8aSp, sbDontBreak, 90},
 	{sbATerm, prSep}:       {sbParaSep, sbDontBreak, 90},
-	{sbATerm, prCR}:        {sbParaSep, sbDontBreak, 90},
+	{sbATerm, prCR}:        {sbCR, sbDontBreak, 90},
 	{sbATerm, prLF}:        {sbParaSep, sbDontBreak, 90},
 	{sbSB7, prSep}:         {sbParaSep, sbDontBreak, 90},
-	{sbSB7, prCR}:          {sbParaSep, sbDontBreak, 90},
+	{sbSB7, prCR}:          {sbCR, sbDontBreak, 90},
 	{sbSB7, prLF}:          {sbParaSep, sbDontBreak, 90},
 	{sbSB8Close, prSep}:    {sbParaSep, sbDontBreak, 90},
-	{sbSB8Close, prCR}:     {sbParaSep, sbDontBreak, 90},
+	{sbSB8Close, prCR}:     {sbCR, sbDontBreak, 90},
 	{sbSB8Close, prLF}:     {sbParaSep, sbDontBreak, 90},
 	{sbSTerm, prSep}:       {sbParaSep, sbDontBreak, 90},
-	{sbSTerm, prCR}:        {sbParaSep, sbDontBreak, 90},
+	{sbSTerm, prCR}:        {sbCR, sbDontBreak, 90},
 	{sbSTerm, prLF}:        {sbParaSep, sbDontBreak, 90},
 	{sbSB8aClose, prSep}:   {sbParaSep, sbDontBreak, 90},
-	{sbSB8aClose, prCR}:    {sbParaSep, sbDontBreak, 90},
+	{sbSB8aClose, prCR}:    {sbCR, sbDontBreak, 90},
 	{sbSB8aClose, prLF}:    {sbParaSep, sbDontBreak, 90},
 
 	// SB10.
-	{sbSB8Sp, prSp}:  {sbSB8Sp, sbDontBreak, 100},
-	{sbSB8aSp, prSp}: {sbSB8aSp, sbDontBreak, 100},
-	{sbSB8Sp, prSep}: {sbParaSep, sbDontBreak, 100},
-	{sbSB8Sp, prCR}:  {sbParaSep, sbDontBreak, 100},
-	{sbSB8Sp, prLF}:  {sbParaSep, sbDontBreak, 100},
+	{sbSB8Sp, prSp}:   {sbSB8Sp, sbDontBreak, 100},
+	{sbSB8aSp, prSp}:  {sbSB8aSp, sbDontBreak, 100},
+	{sbSB8Sp, prSep}:  {sbParaSep, sbDontBreak, 100},
+	{sbSB8Sp, prCR}:   {sbCR, sbDontBreak, 100},
+	{sbSB8Sp, prLF}:   {sbParaSep, sbDontBreak, 100},
+	{sbSB8aSp, prSep}: {sbParaSep, sbDontBreak, 100},
+	{sbSB8aSp, prCR}:  {sbCR, sbDontBreak, 100},
+	{sbSB8aSp, prLF}:  {sbParaSep, sbDontBreak, 100},
 
 	// SB11.
 	{sbATerm, prAny}:     {sbAny, sbBreak, 110},
